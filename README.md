@@ -15,7 +15,7 @@ Current version: `4.20.1`. Built for compatibiltiy with Godot 4.7.1 and Steamwor
 
 Current version: `1.64`. Matches the version of GodotSteam we are using.
 
-The [Steamworks SDK](https://partner.steamgames.com/) is Valve's official C++ library for accessing Steam features (networking, achievements, lobbies, cloud saves, overlay, etc.). GodotSteam is only a wrapper around it, so the SDK is also required to compile the engine. The SDK can be downloaded from the Steamworks website, but has already been added to this project in `modules/godotsteam/sdk`. The `public` and `redistributable_bin` folders are the relevant ones.
+The [Steamworks SDK](https://partner.steamgames.com/downloads/list) is Valve's official C++ library for accessing Steam features (networking, achievements, lobbies, cloud saves, overlay, etc.). GodotSteam is only a wrapper around it, so the SDK is also required to compile the engine. The SDK can be downloaded from the Steamworks website, but has already been added to this project in `modules/godotsteam/sdk`. The `public` and `redistributable_bin` folders are the relevant ones.
 
 Note the SDK also contains `steam_api64.dll` which is the runtime library required for the game executable to run. This file must be placed as a sibling of the `.exe` and uploaded in the content bundle to Steam.
 
