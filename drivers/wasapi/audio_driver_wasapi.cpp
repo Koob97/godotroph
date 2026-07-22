@@ -507,27 +507,16 @@ Error AudioDriverWASAPI::init_output_device(bool p_reinit) {
 		return err;
 	}
 
-	switch (audio_output.channels) {
-		case 1: // Mono
-		case 3: // Surround 2.1
-		case 5: // Surround 5.0
-		case 7: // Surround 7.0
-			// We will downmix as required.
-			channels = audio_output.channels + 1;
-			break;
-
-		case 2: // Stereo
-		case 4: // Surround 3.1
-		case 6: // Surround 5.1
-		case 8: // Surround 7.1
-			channels = audio_output.channels;
-			break;
-
-		default:
-			WARN_PRINT("WASAPI: Unsupported number of channels: " + itos(audio_output.channels));
-			channels = 2;
-			break;
-	}
+	// HAUNTED HEIST PATCH: always mix in stereo, regardless of device channel count.
+	// Bus effects are instantiated once per channel pair, so surround devices
+	// (5.1/7.1) made voice effects 3-4x more expensive and caused audio lag.
+	// The render thread already handles internal channels < device channels by
+	// writing stereo to the front L/R and zero-filling the remaining channels.
+	// Note: mono and stereo devices are unaffected by this patch. Stock Godot
+	// already set channels = 2 for both (mono devices mix in stereo and get
+	// downmixed to 1 channel in the render thread); only devices with 3+
+	// channels behave differently (stereo instead of surround mixing).
+	channels = 2;
 
 	// Sample rate is independent of channels (ref: https://stackoverflow.com/questions/11048825/audio-sample-frequency-rely-on-channels)
 	samples_in.resize(buffer_frames * channels);
