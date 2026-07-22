@@ -39,6 +39,8 @@ These download prebuilt libraries into `%LOCALAPPDATA%\Godot\build_deps`, where 
 
 ## Building
 
+To build everything in one step, run `./build.ps1` from the repo root. It runs both builds below, then moves the resulting `.exe`/`.pdb` files (plus the D3D12 runtime DLLs they need) into a dated subfolder like `bin/2026-07-22`, ready for upload. SCons itself hardcodes `/bin` as its output directory, so this post-build move is the supported way to organize results.
+
 To build the editor:
 ```
 scons platform=windows target=editor debug_symbols=yes -j12
@@ -77,6 +79,21 @@ Note that it is okay to have many `.pdb` files uploaded to Sentry at once, since
 # Changelog
 
 Contains all changes made to the engine, from most recent to oldest.
+
+## 7.22.26 WASAPI audio driver: limit output mixing to stereo
+
+Custom patch (no upstream PR), ported from our 4.6 debug source tree.
+
+Why: Godot mixes audio at the device's channel count, and bus effects are instantiated
+once per channel pair. On surround devices (5.1/7.1) this made voice effects 3-4x more
+expensive and caused audio lag. The patch replaces the channel-count switch in
+`AudioDriverWASAPI::init_output_device` with a hardcoded `channels = 2`, so we always
+mix in stereo. The render thread writes the stereo mix to the device's front L/R
+channels and zero-fills the rest.
+
+Notes:
+* Mono and stereo devices are unaffected (stock Godot already mixed those in stereo).
+* Surround devices lose surround output; the game is stereo-only by design.
 
 ## 7.22.26 WASAPI audio driver: multi-channel microphone input (mic arrays)
 
