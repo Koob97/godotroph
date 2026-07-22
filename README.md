@@ -28,6 +28,7 @@ In order to compile godotroph, one must first install a few pre-requisites:
 * [Scoop](https://scoop.sh/). This is similar to Homebrew, but for Windows. Automatically adds itself to PATH.
 * sCons (installed with `scoop install scons`). This is the build system needed for compiling source code into executables. It __orchestrates__ the build, but needs VS to function as the actual compiler. If Python is not installed, note that this step will install Python as it is a dependency of sCons.
 * [Visual Studio 2022 Community](https://gist.github.com/Chenx221/6f4ed72cd785d80edb0bc50c9921daf7). Make sure C++ tools are installed.
+* sentry-cli (installed with `scoop install sentry-cli`)
 
 Then, from the repo root, install the Direct3D 12 and AccessKit (screen reader) build dependencies:
 ```
@@ -60,6 +61,8 @@ Direct3D 12 (DirectX) and screen reader (AccessKit) support are enabled by defau
 ## Uploading
 
 If the engine has been updated, ensure that a new editor and release template have been compiled. Upload them to the [CustomCompiledGodot](https://drive.google.com/drive/folders/1RcGNdll7p64YjHq86qd5XTMO96mUSSM4?dmr=1&ec=wgc-drive-hero-goto) google drive folder, nested within a dated folder.
+
+Next, login to the Sentry cli with `sentry-cli login`. It brings you to a webpage where you can generate an auth token and paste it into the terminal.
 
 We use Sentry for automatic crash dump uploads. In order for Sentry to parse the crash dumps, we must upload the `.pdb` corresponding to the `.exe` used to run the game. In practice, this means uploading the `.pdb` outputted alongside the release template. To do this, run 
 ```
