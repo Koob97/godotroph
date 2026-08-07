@@ -11,8 +11,6 @@ Import("env")
 
 env.add_source_files(env.core_sources, "*.cpp")
 
-default_perfetto_install_dir = "../../thirdparty/perfetto"
-
 
 def find_perfetto_path(path: pathlib.Path) -> pathlib.Path:
     if not path.is_dir():
@@ -58,7 +56,11 @@ if env["profiler"]:
         if not env["profiler_path"]:
             print("profiler_path must be set when using the tracy profiler. Aborting.")
             Exit(255)
-        profiler_path = find_tracy_path(pathlib.Path(env["profiler_path"]))
+        # SCsub runs with cwd under core/profiling; resolve relative paths from the project root.
+        tracy_arg = pathlib.Path(env["profiler_path"])
+        if not tracy_arg.is_absolute():
+            tracy_arg = pathlib.Path(Dir("#").abspath) / tracy_arg
+        profiler_path = find_tracy_path(tracy_arg)
         env.Prepend(CPPPATH=[str(profiler_path.absolute())])
 
         env_tracy = env.Clone()
@@ -79,8 +81,11 @@ if env["profiler"]:
         env_tracy.add_source_files(env.core_sources, str((profiler_path / "TracyClient.cpp").absolute()))
     elif env["profiler"] == "perfetto":
         if env["profiler_path"]:
-            profiler_path = find_perfetto_path(pathlib.Path(env["profiler_path"]))
-        elif (default_perfetto_path := pathlib.Path(default_perfetto_install_dir)).is_dir():
+            perfetto_arg = pathlib.Path(env["profiler_path"])
+            if not perfetto_arg.is_absolute():
+                perfetto_arg = pathlib.Path(Dir("#").abspath) / perfetto_arg
+            profiler_path = find_perfetto_path(perfetto_arg)
+        elif (default_perfetto_path := pathlib.Path(Dir("#").abspath) / "thirdparty" / "perfetto").is_dir():
             profiler_path = find_perfetto_path(default_perfetto_path)
         else:
             print("Perfetto must be installed or profiler_path must be set when using the perfetto profiler. Aborting.")

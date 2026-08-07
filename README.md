@@ -60,6 +60,53 @@ Parameters of note:
 Direct3D 12 (DirectX) and screen reader (AccessKit) support are enabled by default; they require the install scripts from the Setup section to have been run. To skip them instead, add `d3d12=no accesskit=no`.
 
 
+## Profiling with Tracy
+
+[Tracy](https://github.com/wolfpld/tracy) is a tracing profiler used to inspect CPU timelines in the C++ engine (and instrumented GDScript zones). Follows the [Godot 4.6 Tracy docs](https://docs.godotengine.org/en/4.6/engine_details/development/profiling/tracy.html). For editor-only issues, profile the **editor**; for player-like performance, profile a **release template**.
+
+### One-time setup
+
+Current version: `0.13.0` (must match between the Tracy source used at compile time and the Tracy server binary).
+
+From the repo root, clone the Tracy source into `thirdparty/tracy` (gitignored, same idea as Perfetto):
+
+```
+git clone -b v0.13.0 --single-branch https://github.com/wolfpld/tracy.git thirdparty/tracy
+```
+
+On Windows, download the matching pre-built server from the [Tracy v0.13.0 release](https://github.com/wolfpld/tracy/releases/tag/v0.13.0) (`windows-0.13.0.zip`) and extract it. On this machine that lives at `Documents/Godot/tracy-profiler/`, which contains `tracy-profiler.exe`.
+
+### Build a Tracy-enabled editor
+
+From the repo root:
+
+```
+scons platform=windows target=editor debug_symbols=yes profiler=tracy profiler_path=thirdparty/tracy -j12
+```
+
+### Build a Tracy-enabled release template
+
+From the repo root:
+
+```
+scons platform=windows target=template_release debug_symbols=yes lto=full optimize=speed profiler=tracy profiler_path=thirdparty/tracy
+```
+
+Notes:
+* `debug_symbols=yes` is required so Tracy's sampling / stack features can resolve symbols (same reason we keep `.pdb`s for Sentry).
+* `profiler_path` must point at the Tracy clone (the directory that contains `public/TracyClient.cpp`).
+* By default Godot builds with `profiler_record_on_demand=yes` (`TRACY_ON_DEMAND`), so the game only records while the Tracy server is connected. That avoids unbounded RAM use if you forget to connect.
+* Do **not** ship Tracy-enabled binaries to players; build a normal release template (no `profiler=...`) for production/Steam uploads.
+
+### Record a trace
+
+1. Launch `tracy-profiler.exe` and press **Connect** (so it attaches as soon as the editor/game starts).
+2. Run the Tracy-enabled editor (or export/run a Tracy-enabled release template).
+3. When both are running you should see frame data stream in. Press **Stop** when you have enough.
+
+Useful controls: mouse wheel to zoom, right-drag to pan the timeline, and the Frames left/right arrows in the top bar to step one frame. See the [Tracy manual](https://github.com/wolfpld/tracy/releases/latest/download/tracy.pdf) for more.
+
+
 ## Uploading
 
 If the engine has been updated, ensure that a new editor and release template have been compiled. Upload them to the [CustomCompiledGodot](https://drive.google.com/drive/folders/1RcGNdll7p64YjHq86qd5XTMO96mUSSM4?dmr=1&ec=wgc-drive-hero-goto) google drive folder, nested within a dated folder.
