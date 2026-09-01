@@ -127,6 +127,32 @@ Note that it is okay to have many `.pdb` files uploaded to Sentry at once, since
 
 Contains all changes made to the engine, from most recent to oldest.
 
+## 8.31.26 RenderingDevice: null-check uniform sets on compute/raytracing dispatch
+
+Custom patch extending [upstream PR #114073](https://github.com/godotengine/godot/pull/114073)
+(which only covered draw lists) to the remaining `_uniform_set_update_shared` call sites.
+
+Why: a Sentry crash (`EXCEPTION_ACCESS_VIOLATION_READ / 0x80`) hit
+`RenderingDevice::_uniform_set_update_shared` from `compute_list_dispatch` while
+processing a newly spawned `GPUParticles3D`. `uniform_set_owner.get_or_null()`
+returned null (stale RID after a particle system was duplicated/freed, or the
+uniform set was auto-freed with a dependent resource), and the next line
+iterated `p_uniform_set->shared_textures_to_update` on a null pointer. Offset
+`0x80` is that `LocalVector` field inside `UniformSet`.
+
+The same `ERR_FAIL_NULL(uniform_set)` already exists on `draw_list_draw` /
+`draw_list_draw_indirect` (PR #114073). This adds it to:
+* `compute_list_dispatch` (GPUParticles process compute)
+* `compute_list_dispatch_indirect`
+* raytracing dispatch (same pattern; we do not use RT, included for completeness)
+
+Happy-path cost is one `unlikely()` null compare after a RID lookup already paid.
+On failure the dispatch returns, that particle system skips a frame, and the
+engine keeps running instead of crashing.
+
+Does **not** fix why the RID went stale. Rebuild editor + release template and
+upload the new `.pdb` to Sentry before this helps players.
+
 ## 7.22.26 WASAPI audio driver: limit output mixing to stereo
 
 Custom patch (no upstream PR), ported from our 4.6 debug source tree.
