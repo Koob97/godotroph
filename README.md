@@ -127,6 +127,39 @@ Note that it is okay to have many `.pdb` files uploaded to Sentry at once, since
 
 Contains all changes made to the engine, from most recent to oldest.
 
+## 9.16.26 GodotSteam mesh link resilience: connect-phase retries + failure signal
+
+Custom patch (no upstream PR) to `modules/godotsteam/godotsteam_multiplayer_peer.cpp/.h`.
+Game-side counterpart documented in `Haunted-Heist/Docs/MeshNetworkResilience.md`.
+
+Why: `SteamMultiplayerPeer` builds a full mesh by opening one direct symmetric
+`ConnectP2P` link per pair of lobby members, but a link that failed while still
+connecting (NAT punch / relay timeout — the common case in 8-player lobbies with
+28 links) was handled completely silently: no retry (upstream only retried
+`k_ESteamNetConnectionEnd_Remote_BadCert`), no signal, and the peer never entered
+the `peers` map, so broadcasts just skipped it forever. In game this appeared as
+two players frozen/silent to each other while everyone else looked fine.
+
+Three changes in `network_connection_status_changed`:
+
+1. **Retry any connect-phase failure**, not just bad certs: old state `Connecting`
+   or `FindingRoute` triggers a re-dial via `add_peer()`, capped by the existing
+   `connection_retries < 5` counter (reset whenever any link connects), skipped
+   when the peer is shutting down or the remote is no longer a lobby member
+   (new `_is_lobby_member()` helper).
+2. **Erase stale `steam_connections` entries** for connect-phase failures.
+   Upstream only erased entries for previously-Connected links, so failed pending
+   connections leaked `Ref<SteamPacketPeer>` entries for the session's lifetime.
+3. **New signal `peer_connection_failed(steam_id, end_reason, debug_message,
+   was_connecting)`** emitted on every link close/failure so the game layer gets
+   observability (telemetry + the game-side mesh watchdog). Documented in
+   `doc_classes/SteamMultiplayerPeer.xml`.
+
+The game connects to the signal guarded by `has_signal()`, so it runs unchanged on
+pre-patch binaries. Rebuild editor + release template (`./build.ps1`) for the
+engine-side retry/cleanup/signal to take effect; the game-side watchdog
+(`MeshConnectionWatchdog`) provides equivalent re-dial coverage in the meantime.
+
 ## 8.31.26 RenderingDevice: null-check uniform sets on compute/raytracing dispatch
 
 Custom patch extending [upstream PR #114073](https://github.com/godotengine/godot/pull/114073)

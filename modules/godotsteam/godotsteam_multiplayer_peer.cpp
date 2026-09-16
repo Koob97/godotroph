@@ -156,12 +156,25 @@ void SteamMultiplayerPeer::network_connection_status_changed(
 						p_status_change->m_info.m_szEndDebug)
 						);
 			}
+			// GODOTROPH (mesh resilience): capture link identity before cleanup so we can
+			// report the failure and retry. See "GodotSteam mesh link resilience" in README.md.
+			uint64_t remote_steam_id = SteamAPI_SteamNetworkingIdentity_GetSteamID64(
+					&p_status_change->m_info.m_identityRemote);
+			bool was_connect_phase =
+					p_status_change->m_eOldState == k_ESteamNetworkingConnectionState_Connecting ||
+					p_status_change->m_eOldState == k_ESteamNetworkingConnectionState_FindingRoute;
+
 			// Determine if we were previously connected
 			if (p_status_change->m_eOldState ==
 					k_ESteamNetworkingConnectionState_Connected) {
 				uint32_t connection_peer_id = p_status_change->m_info.m_nUserData;
 				disconnect_peer(connection_peer_id, true);
 				// Erase directly from the status_change in case it was a lingering connection.
+				steam_connections.erase(p_status_change->m_hConn);
+			} else {
+				// GODOTROPH (mesh resilience): a link that failed while still connecting used
+				// to leave its pending entry in steam_connections forever (only Connected
+				// links were erased). Erase it so retries start from a clean slate.
 				steam_connections.erase(p_status_change->m_hConn);
 			}
 
@@ -172,14 +185,25 @@ void SteamMultiplayerPeer::network_connection_status_changed(
 					p_status_change->m_hConn, 0, nullptr, false
 					);
 
-			// If we were the client, attempt to reconnect
-			if (p_status_change->m_eOldState == k_ESteamNetworkingConnectionState_Connecting && p_status_change->m_info.m_eEndReason == k_ESteamNetConnectionEnd_Remote_BadCert && connection_retries < 5) {
+			// GODOTROPH (mesh resilience): surface every link failure to the game layer.
+			// Upstream code was silent here, which made client<->client mesh failures
+			// undetectable from GDScript (frozen bodies / no voice with no error anywhere).
+			emit_signal(SNAME("peer_connection_failed"), remote_steam_id,
+					(int)p_status_change->m_info.m_eEndReason,
+					String::utf8(p_status_change->m_info.m_szEndDebug),
+					was_connect_phase);
+
+			// GODOTROPH (mesh resilience): retry any connect-phase failure (NAT punch /
+			// relay timeouts, remote refusals), not just bad certs as upstream did. Retries
+			// are skipped once this peer is shutting down or the remote left the lobby.
+			// connection_retries resets to 0 whenever any link reaches Connected.
+			if (was_connect_phase && connection_status != CONNECTION_DISCONNECTED &&
+					connection_retries < 5 && _is_lobby_member(remote_steam_id)) {
 				if (unlikely(debug_level > DEBUG_LEVEL_NONE)) {
-					WARN_PRINT("Attempting to reconnect after bad cert.");
+					WARN_PRINT(vformat("Retrying failed connect to %ud (attempt %d).",
+							remote_steam_id, connection_retries + 1));
 				}
-				add_peer(SteamAPI_SteamNetworkingIdentity_GetSteamID64(
-						&p_status_change->m_info.m_identityRemote)
-						);
+				add_peer(remote_steam_id);
 				connection_retries++;
 			}
 			break;
@@ -541,6 +565,24 @@ Error SteamMultiplayerPeer::add_peer(uint64_t p_steam_id, int p_virtual_port) {
 	return OK;
 }
 
+// GODOTROPH (mesh resilience): true when the given Steam ID is still a member of the
+// lobby this peer was created against, so connect retries stop once someone leaves.
+// Low-level (no lobby) setups always return true and rely on the retry cap instead.
+bool SteamMultiplayerPeer::_is_lobby_member(uint64_t p_steam_id) {
+	if (tracked_lobby == 0) {
+		return true;
+	}
+	int count = SteamAPI_ISteamMatchmaking_GetNumLobbyMembers(
+			SteamAPI_SteamMatchmaking(), tracked_lobby);
+	for (int i = 0; i < count; i++) {
+		if ((uint64_t)SteamAPI_ISteamMatchmaking_GetLobbyMemberByIndex(
+				SteamAPI_SteamMatchmaking(), tracked_lobby, i) == p_steam_id) {
+			return true;
+		}
+	}
+	return false;
+}
+
 void SteamMultiplayerPeer::_add_pending_peer(
 		uint64_t p_steam_id, HSteamNetConnection p_connection_handle,
 		SteamPacketPeer::PeerState p_peer_state) {
@@ -782,4 +824,13 @@ void SteamMultiplayerPeer::_bind_methods() {
 	BIND_ENUM_CONSTANT(DEBUG_LEVEL_NONE);
 	BIND_ENUM_CONSTANT(DEBUG_LEVEL_PEER);
 	BIND_ENUM_CONSTANT(DEBUG_LEVEL_STEAM);
+
+	// GODOTROPH (mesh resilience): emitted whenever a Steam networking connection to
+	// another peer closes or fails, including connect-phase failures that upstream
+	// swallowed silently. was_connecting is true when the link never reached Connected.
+	ADD_SIGNAL(MethodInfo("peer_connection_failed",
+			PropertyInfo(Variant::INT, "steam_id"),
+			PropertyInfo(Variant::INT, "end_reason"),
+			PropertyInfo(Variant::STRING, "debug_message"),
+			PropertyInfo(Variant::BOOL, "was_connecting")));
 }

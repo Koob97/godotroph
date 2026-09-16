@@ -96,6 +96,17 @@
 		<member name="server_relay" type="bool" setter="set_server_relay" getter="get_server_relay" default="false">
 		</member>
 	</members>
+	<signals>
+		<signal name="peer_connection_failed">
+			<param index="0" name="steam_id" type="int" />
+			<param index="1" name="end_reason" type="int" />
+			<param index="2" name="debug_message" type="String" />
+			<param index="3" name="was_connecting" type="bool" />
+			<description>
+				Godotroph addition. Emitted whenever a Steam networking connection to another peer closes or fails, including connect-phase failures (NAT punch / relay timeouts) that are otherwise silent. [param end_reason] is the [code]ESteamNetConnectionEnd[/code] value reported by Steam and [param was_connecting] is [code]true[/code] when the link never reached the connected state. Connect-phase failures are also retried internally (up to 5 attempts while the remote remains a lobby member).
+			</description>
+		</signal>
+	</signals>
 	<constants>
 		<constant name="DEBUG_LEVEL_NONE" value="0" enum="DebugLevel">
 		</constant>

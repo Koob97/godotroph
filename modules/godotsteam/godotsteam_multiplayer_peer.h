@@ -137,6 +137,8 @@ protected:
 	const int _get_steam_packet_flags();
 	Error _create_listen_socket(int p_virtual_port);
 	Error _create_poll_group();
+	// GODOTROPH (mesh resilience): lobby membership check gating connect retries.
+	bool _is_lobby_member(uint64_t p_steam_id);
 	void _add_pending_peer(uint64_t p_steam_id, HSteamNetConnection p_connection_handle,
 			SteamPacketPeer::PeerState p_peer_state
 			);
