@@ -51,4 +51,11 @@ mv bin/godot_macos_release.universal "$OUT_DIR/"
 # sitting next to the Windows editor exe).
 cp modules/godotsteam/sdk/redistributable_bin/osx/libsteam_api.dylib "$OUT_DIR/"
 
+# Upload template dSYMs to Sentry so native crashes symbolicate
+# (macOS counterpart of the documented Windows .pdb upload; requires a
+# one-time `sentry-cli login`).
+sentry-cli debug-files upload --include-sources --org autotroph-games --project haunted-heist \
+    "$OUT_DIR/godot.macos.template_release.arm64.dSYM" \
+    "$OUT_DIR/godot.macos.template_release.x86_64.dSYM"
+
 echo "Build artifacts moved to $OUT_DIR"
