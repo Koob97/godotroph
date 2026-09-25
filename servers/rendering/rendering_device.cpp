@@ -6947,6 +6947,12 @@ void RenderingDevice::compute_list_dispatch_threads(ComputeListID p_list, uint32
 
 #endif
 
+	// Failed pipeline binds leave this at 0. Dividing by it is the Intel Mac glow crash.
+	if (compute_list.state.local_group_size[0] == 0 || compute_list.state.local_group_size[1] == 0 || compute_list.state.local_group_size[2] == 0) {
+		ERR_PRINT_ONCE("Compute dispatch skipped: pipeline local group size is zero.");
+		return;
+	}
+
 	compute_list_dispatch(p_list, Math::division_round_up(p_x_threads, compute_list.state.local_group_size[0]), Math::division_round_up(p_y_threads, compute_list.state.local_group_size[1]), Math::division_round_up(p_z_threads, compute_list.state.local_group_size[2]));
 }
 

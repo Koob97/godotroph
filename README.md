@@ -127,6 +127,31 @@ Note that it is okay to have many `.pdb` files uploaded to Sentry at once, since
 
 Contains all changes made to the engine, from most recent to oldest.
 
+## 9.24.26 RenderingDevice: skip compute dispatch when the workgroup size is zero
+
+Custom patch (no upstream PR) to `servers/rendering/rendering_device.cpp`
+(`RenderingDevice::compute_list_dispatch_threads`). Game-side note in
+`Haunted-Heist/Docs/Crashes.md`.
+
+Why: an Intel MacBook Air (x86_64 slice of the universal Mac export) crashed
+with `EXC_ARITHMETIC` (exception 3, code 1, subcode 0 — integer divide by zero)
+in `compute_list_dispatch_threads`, called from `CopyEffects::gaussian_glow`
+during Forward+ post-processing. That function divides the thread count by
+`compute_list.state.local_group_size`. A compute list starts at `{0, 0, 0}`,
+and the size is only filled when a compute pipeline binds. The glow pass does
+not check that bind. On this GPU the glow compute pipeline does not bind, so
+the dispatch divides by zero. A bound pipeline has a workgroup of 8×8×1 and
+never hits the check.
+
+The patch returns before the division and prints once:
+`Compute dispatch skipped: pipeline local group size is zero.`
+Valid pipelines are unchanged. The failed glow dispatch is skipped, so glow
+is missing for that pass and the process stays up.
+
+Does **not** make the Intel glow compute pipeline bind. Rebuild the Mac
+export template from this source and re-export before it helps players. The
+2026-09-16 `macos.zip` does not include this patch.
+
 ## 9.16.26 GodotSteam mesh link resilience: connect-phase retries + failure signal
 
 Custom patch (no upstream PR) to `modules/godotsteam/godotsteam_multiplayer_peer.cpp/.h`.
