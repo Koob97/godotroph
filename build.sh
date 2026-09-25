@@ -8,6 +8,9 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 scons platform=macos arch=arm64 target=editor debug_symbols=yes
+# Free the editor's object tree before the template builds; this machine's
+# disk can't hold editor + template objects at once (~11 GB combined).
+find bin/obj -name "*editor*" -delete
 # lto=thin instead of the Windows script's lto=full: full LTO's link step gets
 # OOM-killed on this 8 GB machine. Thin LTO links within memory limits with
 # near-identical runtime performance.
@@ -54,7 +57,9 @@ cp modules/godotsteam/sdk/redistributable_bin/osx/libsteam_api.dylib "$OUT_DIR/"
 # Upload template dSYMs to Sentry so native crashes symbolicate
 # (macOS counterpart of the documented Windows .pdb upload; requires a
 # one-time `sentry-cli login`).
-sentry-cli debug-files upload --include-sources --org autotroph-games --project haunted-heist \
+# --header "Connection: close" forces HTTP/1.1: chunk uploads over HTTP/2
+# fail with TLS "bad record mac" on this machine.
+sentry-cli --header "Connection: close" debug-files upload --include-sources --org autotroph-games --project haunted-heist \
     "$OUT_DIR/godot.macos.template_release.arm64.dSYM" \
     "$OUT_DIR/godot.macos.template_release.x86_64.dSYM"
 
