@@ -5986,6 +5986,13 @@ void RenderingDevice::draw_list_set_push_constant(DrawListID p_list, const void 
 			"This render pipeline requires (" + itos(draw_list.validation.pipeline_push_constant_size) + ") bytes of push constant data, supplied: (" + itos(p_data_size) + ")");
 #endif
 
+	// A failed pipeline bind leaves the shader driver ID null; recording it crashes the
+	// driver at graph replay (Intel Mac push-constant crash). Skip and keep the process up.
+	if (!draw_list.state.pipeline_shader_driver_id) {
+		ERR_PRINT_ONCE("Draw push constant skipped: no render pipeline is bound.");
+		return;
+	}
+
 	draw_graph.add_draw_list_set_push_constant(draw_list.state.pipeline_shader_driver_id, p_data, p_data_size);
 
 #ifdef DEBUG_ENABLED
@@ -6793,6 +6800,13 @@ void RenderingDevice::compute_list_set_push_constant(ComputeListID p_list, const
 			"This compute pipeline requires (" + itos(compute_list.validation.pipeline_push_constant_size) + ") bytes of push constant data, supplied: (" + itos(p_data_size) + ")");
 #endif
 
+	// A failed pipeline bind leaves the shader driver ID null; recording it crashes the
+	// driver at graph replay (Intel Mac push-constant crash). Skip and keep the process up.
+	if (!compute_list.state.pipeline_shader_driver_id) {
+		ERR_PRINT_ONCE("Compute push constant skipped: no compute pipeline is bound.");
+		return;
+	}
+
 	draw_graph.add_compute_list_set_push_constant(compute_list.state.pipeline_shader_driver_id, p_data, p_data_size);
 
 	// Store it in the state in case we need to restart the compute list.
@@ -6809,6 +6823,14 @@ void RenderingDevice::compute_list_dispatch(ComputeListID p_list, uint32_t p_x_g
 
 	ERR_FAIL_COND(p_list != ID_TYPE_COMPUTE_LIST);
 	ERR_FAIL_COND(!compute_list.active);
+
+	// The "no compute pipeline was set" check below is DEBUG-only. In release a failed
+	// pipeline bind leaves the shader driver ID null, and recording uniform-set binds or
+	// the dispatch with it crashes the driver at graph replay (Intel Mac). Skip instead.
+	if (!compute_list.state.pipeline_shader_driver_id) {
+		ERR_PRINT_ONCE("Compute dispatch skipped: no compute pipeline is bound.");
+		return;
+	}
 
 #ifdef DEBUG_ENABLED
 	ERR_FAIL_COND_MSG(p_x_groups == 0, "Dispatch amount of X compute groups (" + itos(p_x_groups) + ") is zero.");

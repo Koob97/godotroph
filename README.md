@@ -128,6 +128,33 @@ Note that it is okay to have many `.pdb` files uploaded to Sentry at once, since
 
 Contains all changes made to the engine, from most recent to oldest.
 
+## 9.25.26 RenderingDevice: skip push constants / dispatch when no pipeline is bound
+
+Custom patch (no upstream PR) to `servers/rendering/rendering_device.cpp`
+(`draw_list_set_push_constant`, `compute_list_set_push_constant`,
+`compute_list_dispatch`). Game-side note in `Haunted-Heist/Docs/Crashes.md`.
+
+Why: the same Intel MacBook Air (Iris Plus, MoltenVK) crashed again after the
+9.24.26 patch, this time `EXC_BAD_ACCESS` (`KERN_INVALID_ADDRESS at 0x60`) in
+`RenderingDeviceDriverVulkan::command_bind_push_constants` during
+`RenderingDeviceGraph::_run_render_commands` at end of frame. The player's log
+shows 19 compute pipelines failing to create
+(`Couldn't create Vulkan compute pipelines (VkResult error -3)`). A failed
+`compute_list_bind_compute_pipeline` returns early and leaves
+`state.pipeline_shader_driver_id` null. `compute_list_set_push_constant` then
+records that null ShaderID into the frame graph (its validation is
+DEBUG-only), and the replay dereferences it — 0x60 is a field offset inside
+the null `ShaderInfo`.
+
+The patch skips (with `ERR_PRINT_ONCE`) push-constant recording on draw and
+compute lists, and `compute_list_dispatch` (whose "no pipeline set" check was
+also DEBUG-only and which records uniform-set binds with the same null
+ShaderID), whenever no pipeline has ever bound. Valid pipelines are unchanged.
+
+Does **not** make those 19 compute pipelines build on that GPU (`VkResult -3`
+from MoltenVK); the affected effects stay missing on that machine. Rebuild the
+Mac export template from this source and re-export before it helps players.
+
 ## 9.24.26 RenderingDevice: skip compute dispatch when the workgroup size is zero
 
 Custom patch (no upstream PR) to `servers/rendering/rendering_device.cpp`
