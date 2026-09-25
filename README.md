@@ -39,7 +39,7 @@ These download prebuilt libraries into `%LOCALAPPDATA%\Godot\build_deps`, where 
 
 ## Building
 
-To build everything in one step, run `./build.ps1` from the repo root. It runs both builds below, then moves the resulting `.exe`/`.pdb` files (plus the D3D12 runtime DLLs they need) into a dated subfolder like `bin/2026-07-22`, ready for upload. SCons itself hardcodes `/bin` as its output directory, so this post-build move is the supported way to organize results.
+To build everything in one step, run `./build.ps1` from the repo root. It runs both builds below, moves the resulting `.exe`/`.pdb` files (plus the D3D12 runtime DLLs they need) into a dated subfolder like `bin/2026-07-22`, then uploads that folder's `.pdb` files to Sentry. SCons itself hardcodes `/bin` as its output directory, so this post-build move is the supported way to organize results. `sentry-cli` must already be logged in (`sentry-cli login`).
 
 To build the editor:
 ```
@@ -113,12 +113,13 @@ If the engine has been updated, ensure that a new editor and release template ha
 
 Next, login to the Sentry cli with `sentry-cli login`. It brings you to a webpage where you can generate an auth token and paste it into the terminal.
 
-We use Sentry for automatic crash dump uploads. In order for Sentry to parse the crash dumps, we must upload the `.pdb` corresponding to the `.exe` used to run the game. In practice, this means uploading the `.pdb` outputted alongside the release template. To do this, run 
+We use Sentry for automatic crash dump uploads. In order for Sentry to parse the crash dumps, we must upload the `.pdb` corresponding to the `.exe` used to run the game. `./build.ps1` does this after the dated folder is written, uploading only that folder:
+
 ```
-sentry-cli debug-files upload --include-sources --org autotroph-games --project haunted-heist <path_to_this_repo/bin>
+sentry-cli debug-files upload --include-sources --org autotroph-games --project haunted-heist <path_to_this_repo/bin/yyyy-MM-dd>
 ```
 
-This will ensure that any `.pdb` in the `/bin` directory is uploaded to Sentry.
+To upload by hand, run that command against the dated folder (or against `/bin` to send every `.pdb` still sitting there).
 
 Note that it is okay to have many `.pdb` files uploaded to Sentry at once, since it can intelligently match the GUID from the executed program to the GUID of the relevant `.pdb`.
 
