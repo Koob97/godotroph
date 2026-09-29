@@ -7618,6 +7618,18 @@ void DisplayServerWindows::tablet_set_current_driver(const String &p_driver) {
 	}
 }
 
+// HAUNTED HEIST PATCH: detect Wine/Proton (Steam Deck, Linux). Wine's ntdll exports
+// wine_get_version and native Windows never does. The environment variables cover
+// Wine builds that hide their exports; Proton and Steam set them on every launch.
+static bool _is_running_under_wine() {
+	HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
+	if (ntdll != nullptr && GetProcAddress(ntdll, "wine_get_version") != nullptr) {
+		return true;
+	}
+	OS *os = OS::get_singleton();
+	return os->get_environment("SteamDeck") == "1" || !os->get_environment("STEAM_COMPAT_DATA_PATH").is_empty();
+}
+
 DisplayServerWindows::DisplayServerWindows(const String &p_rendering_driver, DisplayServerEnums::WindowMode p_mode, DisplayServerEnums::VSyncMode p_vsync_mode, uint32_t p_flags, const Vector2i *p_position, const Vector2i &p_resolution, int p_screen, DisplayServerEnums::Context p_context, int64_t p_parent_window, Error &r_error) {
 	KeyMappingWindows::initialize();
 
@@ -7872,6 +7884,19 @@ DisplayServerWindows::DisplayServerWindows(const String &p_rendering_driver, Dis
 
 	String rendering_drivers[2];
 	uint32_t rendering_driver_count = 0;
+
+#if defined(VULKAN_ENABLED) && defined(D3D12_ENABLED)
+	// HAUNTED HEIST PATCH: under Wine/Proton, D3D12 goes through vkd3d-proton and is broken
+	// on Steam Deck, while Vulkan runs close to the native driver. Prefer Vulkan there,
+	// unless the player explicitly chose a driver with --rendering-driver.
+	if (rendering_driver == "d3d12" && OS::get_singleton()->get_current_rendering_driver_name_source() != OS::RENDERING_SOURCE_COMMANDLINE && _is_running_under_wine()) {
+		print_verbose("Running under Wine/Proton, preferring Vulkan over Direct3D 12.");
+		rendering_driver = "vulkan";
+		OS::get_singleton()->set_current_rendering_driver_name(rendering_driver, OS::RENDERING_SOURCE_FALLBACK);
+		// Keep D3D12 as a last resort even if fallback_to_d3d12 is off.
+		fallback_to_d3d12 = true;
+	}
+#endif
 
 	if (rendering_driver == "d3d12") {
 		rendering_drivers[rendering_driver_count++] = rendering_driver;

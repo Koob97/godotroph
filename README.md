@@ -128,6 +128,94 @@ Note that it is okay to have many `.pdb` files uploaded to Sentry at once, since
 
 Contains all changes made to the engine, from most recent to oldest.
 
+## 9.29.26 Windows: prefer Vulkan over Direct3D 12 under Wine/Proton
+
+Custom patch (no upstream PR) to `platform/windows/display_server_windows.cpp`
+(new `_is_running_under_wine()`, used in the `DisplayServerWindows`
+constructor before the rendering driver list is built). Marked
+`HAUNTED HEIST PATCH`.
+
+Why: the game ships a Windows build only, and Steam Deck runs it through
+Proton. D3D12 there goes through vkd3d-proton and doesn't work on the Deck,
+so the Steamworks default launch option had to force Vulkan for everyone,
+Windows players included. Steamworks can't target a launch option at the Deck,
+because under Proton it matches the Windows options.
+
+The patch: if the requested driver is `d3d12`, it did **not** come from
+`--rendering-driver` on the command line, and the process is running under
+Wine, try Vulkan first, with D3D12 as a last resort. Wine is detected by
+`ntdll.dll` exporting `wine_get_version` (native Windows never does), with
+`SteamDeck=1` or a non-empty `STEAM_COMPAT_DATA_PATH` as a backup for Wine builds
+that hide their exports. The driver source is reported as
+`RENDERING_SOURCE_FALLBACK`. Native Windows is unchanged, and an explicit
+`--rendering-driver` always wins, on either platform.
+
+After shipping a build with this: remove `--rendering-driver vulkan` from the
+default Steamworks launch option so Windows uses the project's D3D12 default.
+Optionally add a second launch option ("Play (Vulkan)") for Windows players who
+want Vulkan.
+
+## 9.29.26 Vulkan: serialize pipeline cache reads against pipeline creation
+
+Custom patch (no upstream PR) to `drivers/vulkan/rendering_device_driver_vulkan.h`
+/ `.cpp`: new `RWLock pipelines_cache_lock`. Marked `HAUNTED HEIST PATCH`.
+Game-side note in `Haunted-Heist/Docs/Crashes.md`.
+
+Why: an Intel Windows player crashed with `EXCEPTION_ACCESS_VIOLATION_READ /
+0x170` inside `igvk64` (Intel's Vulkan driver), in `vkGetPipelineCacheData`
+called from `pipeline_cache_serialize` on the background `PipelineCacheSave`
+task. `RenderingDevice::render_pipeline_create` calls the driver outside
+`_THREAD_SAFE_METHOD_` so pipelines compile in parallel, so the save can read
+the cache while other threads create pipelines through it. Vulkan allows this
+(the cache isn't created `EXTERNALLY_SYNCHRONIZED`); Intel's driver evidently
+doesn't handle it.
+
+The patch: `vkCreateGraphicsPipelines`, `vkCreateComputePipelines`, and
+`CreateRaytracingPipelinesKHR` take the lock shared, so compiles stay parallel.
+Both `vkGetPipelineCacheData` calls (`pipeline_cache_query_size`,
+`pipeline_cache_serialize`) take it exclusive. The lock only wraps single
+Vulkan calls and is never nested, so it can't deadlock. The only new waiting
+is compiles pausing for the few ms a mid-game save copies the cache.
+
+Caveat: the crash log only showed the crashing thread, so the race is likely
+but not proven. If the crash recurs on this build, the driver is failing in
+`vkGetPipelineCacheData` for some other reason; the fallback is raising
+`rendering/rendering_device/pipeline_cache/save_chunk_size_mb` so the cache
+only saves at exit.
+
+## 9.27.26 RenderingDevice: skip draws and dispatches after a failed pipeline bind
+
+Custom patch (no upstream PR) to `servers/rendering/rendering_device.h` /
+`rendering_device.cpp` (`draw_list_bind_render_pipeline`, `draw_list_draw`,
+`draw_list_draw_indirect`, `compute_list_bind_compute_pipeline`,
+`compute_list_dispatch`, `compute_list_dispatch_indirect`, plus the two
+push-constant guards from 9.25.26). Game-side note in
+`Haunted-Heist/Docs/Crashes.md`.
+
+Why: the same Intel MacBook Air (Iris Plus, MoltenVK) crashed again on the
+9.25.26 build, this time `EXC_BAD_ACCESS` (`KERN_PROTECTION_FAILURE`) in a
+`memmove` inside the Apple driver (`IGAccelRenderCommandEncoder::writeVSState`)
+while `MVKCmdDrawIndexed::encode` submitted the frame. The 9.25.26 guards only
+fired when **no pipeline had ever bound** (null ShaderID). But when a pipeline
+bind fails mid-list (`ERR_FAIL_NULL(pipeline)` returns early), the list keeps
+the **previous** pipeline's state — non-null, so the guards pass — and the
+draw is still recorded. The driver then encodes the draw with a stale pipeline
+against freshly bound vertex/uniform buffers sized for a different shader, and
+its vertex-state copy runs off the end of a buffer.
+
+The patch adds a `pipeline_bind_failed` flag to draw and compute list state,
+set when a bind fails and cleared on any successful bind. Draws, indirect
+draws, dispatches, indirect dispatches, and push constants are skipped (with
+`ERR_PRINT_ONCE`) while the flag is set or while no pipeline has ever bound.
+Valid pipelines are unchanged.
+
+Does **not** make the failing pipelines build on that GPU; whatever they drew
+is missing on that machine. Rebuild the Mac export template from this source
+and re-export before it helps players. If the crash persists even with no
+"skipped" messages in the player's log, the draw had a valid pipeline and this
+is a raw Ice Lake Metal driver bug — the remaining option is steering that
+hardware to the Compatibility renderer or listing it as unsupported.
+
 ## 9.25.26 RenderingDevice: skip push constants / dispatch when no pipeline is bound
 
 Custom patch (no upstream PR) to `servers/rendering/rendering_device.cpp`

@@ -5692,7 +5692,13 @@ void RenderingDevice::draw_list_bind_render_pipeline(DrawListID p_list, RID p_re
 	ERR_FAIL_COND(!draw_list.active);
 
 	const RenderPipeline *pipeline = render_pipeline_owner.get_or_null(p_render_pipeline);
+	if (unlikely(pipeline == nullptr)) {
+		// A failed bind leaves the previous pipeline's state in place. Draws recorded in
+		// that state crash some drivers at graph replay (Intel Mac). Flag it so draws skip.
+		draw_list.state.pipeline_bind_failed = true;
+	}
 	ERR_FAIL_NULL(pipeline);
+	draw_list.state.pipeline_bind_failed = false;
 #ifdef DEBUG_ENABLED
 	ERR_FAIL_COND(pipeline->validation.framebuffer_format != draw_list_framebuffer_format && pipeline->validation.render_pass != draw_list_current_subpass);
 #endif
@@ -5986,10 +5992,11 @@ void RenderingDevice::draw_list_set_push_constant(DrawListID p_list, const void 
 			"This render pipeline requires (" + itos(draw_list.validation.pipeline_push_constant_size) + ") bytes of push constant data, supplied: (" + itos(p_data_size) + ")");
 #endif
 
-	// A failed pipeline bind leaves the shader driver ID null; recording it crashes the
-	// driver at graph replay (Intel Mac push-constant crash). Skip and keep the process up.
-	if (!draw_list.state.pipeline_shader_driver_id) {
-		ERR_PRINT_ONCE("Draw push constant skipped: no render pipeline is bound.");
+	// A failed pipeline bind leaves the shader driver ID null (or the previous pipeline's
+	// stale state); recording it crashes the driver at graph replay (Intel Mac
+	// push-constant crash). Skip and keep the process up.
+	if (unlikely(draw_list.state.pipeline_bind_failed || !draw_list.state.pipeline_shader_driver_id)) {
+		ERR_PRINT_ONCE("Draw push constant skipped: no valid render pipeline is bound.");
 		return;
 	}
 
@@ -6004,6 +6011,14 @@ void RenderingDevice::draw_list_draw(DrawListID p_list, bool p_use_indices, uint
 	ERR_RENDER_THREAD_GUARD();
 
 	ERR_FAIL_COND(!draw_list.active);
+
+	// A failed pipeline bind leaves the previous pipeline's state in place (or none at
+	// all). Encoding this draw against that stale/missing state crashes some drivers at
+	// graph replay (Intel Mac `writeVSState` memmove). Skip and keep the process up.
+	if (unlikely(draw_list.state.pipeline_bind_failed || !draw_list.state.pipeline_shader_driver_id)) {
+		ERR_PRINT_ONCE("Draw skipped: no valid render pipeline is bound.");
+		return;
+	}
 
 #ifdef DEBUG_ENABLED
 	ERR_FAIL_COND_MSG(!draw_list.validation.pipeline_active,
@@ -6167,6 +6182,12 @@ void RenderingDevice::draw_list_draw_indirect(DrawListID p_list, bool p_use_indi
 	ERR_RENDER_THREAD_GUARD();
 
 	ERR_FAIL_COND(!draw_list.active);
+
+	// See draw_list_draw: skip draws recorded against stale/missing pipeline state.
+	if (unlikely(draw_list.state.pipeline_bind_failed || !draw_list.state.pipeline_shader_driver_id)) {
+		ERR_PRINT_ONCE("Indirect draw skipped: no valid render pipeline is bound.");
+		return;
+	}
 
 	Buffer *buffer = storage_buffer_owner.get_or_null(p_buffer);
 	ERR_FAIL_NULL(buffer);
@@ -6679,7 +6700,13 @@ void RenderingDevice::compute_list_bind_compute_pipeline(ComputeListID p_list, R
 	ERR_FAIL_COND(!compute_list.active);
 
 	const ComputePipeline *pipeline = compute_pipeline_owner.get_or_null(p_compute_pipeline);
+	if (unlikely(pipeline == nullptr)) {
+		// A failed bind leaves the previous pipeline's state in place. Dispatches recorded
+		// in that state crash some drivers at graph replay (Intel Mac). Flag it to skip.
+		compute_list.state.pipeline_bind_failed = true;
+	}
 	ERR_FAIL_NULL(pipeline);
+	compute_list.state.pipeline_bind_failed = false;
 
 	if (p_compute_pipeline == compute_list.state.pipeline) {
 		return; // Redundant state, return.
@@ -6800,10 +6827,11 @@ void RenderingDevice::compute_list_set_push_constant(ComputeListID p_list, const
 			"This compute pipeline requires (" + itos(compute_list.validation.pipeline_push_constant_size) + ") bytes of push constant data, supplied: (" + itos(p_data_size) + ")");
 #endif
 
-	// A failed pipeline bind leaves the shader driver ID null; recording it crashes the
-	// driver at graph replay (Intel Mac push-constant crash). Skip and keep the process up.
-	if (!compute_list.state.pipeline_shader_driver_id) {
-		ERR_PRINT_ONCE("Compute push constant skipped: no compute pipeline is bound.");
+	// A failed pipeline bind leaves the shader driver ID null (or the previous pipeline's
+	// stale state); recording it crashes the driver at graph replay (Intel Mac
+	// push-constant crash). Skip and keep the process up.
+	if (unlikely(compute_list.state.pipeline_bind_failed || !compute_list.state.pipeline_shader_driver_id)) {
+		ERR_PRINT_ONCE("Compute push constant skipped: no valid compute pipeline is bound.");
 		return;
 	}
 
@@ -6825,10 +6853,11 @@ void RenderingDevice::compute_list_dispatch(ComputeListID p_list, uint32_t p_x_g
 	ERR_FAIL_COND(!compute_list.active);
 
 	// The "no compute pipeline was set" check below is DEBUG-only. In release a failed
-	// pipeline bind leaves the shader driver ID null, and recording uniform-set binds or
-	// the dispatch with it crashes the driver at graph replay (Intel Mac). Skip instead.
-	if (!compute_list.state.pipeline_shader_driver_id) {
-		ERR_PRINT_ONCE("Compute dispatch skipped: no compute pipeline is bound.");
+	// pipeline bind leaves the shader driver ID null (or the previous pipeline's stale
+	// state), and recording uniform-set binds or the dispatch with it crashes the driver
+	// at graph replay (Intel Mac). Skip instead.
+	if (unlikely(compute_list.state.pipeline_bind_failed || !compute_list.state.pipeline_shader_driver_id)) {
+		ERR_PRINT_ONCE("Compute dispatch skipped: no valid compute pipeline is bound.");
 		return;
 	}
 
@@ -6983,6 +7012,12 @@ void RenderingDevice::compute_list_dispatch_indirect(ComputeListID p_list, RID p
 
 	ERR_FAIL_COND(p_list != ID_TYPE_COMPUTE_LIST);
 	ERR_FAIL_COND(!compute_list.active);
+
+	// See compute_list_dispatch: skip dispatches recorded against stale/missing pipeline state.
+	if (unlikely(compute_list.state.pipeline_bind_failed || !compute_list.state.pipeline_shader_driver_id)) {
+		ERR_PRINT_ONCE("Indirect compute dispatch skipped: no valid compute pipeline is bound.");
+		return;
+	}
 
 	Buffer *buffer = storage_buffer_owner.get_or_null(p_buffer);
 	ERR_FAIL_NULL(buffer);

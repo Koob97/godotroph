@@ -5339,7 +5339,11 @@ size_t RenderingDeviceDriverVulkan::pipeline_cache_query_size() {
 	// FIXME:
 	// We're letting the cache grow unboundedly. We may want to set at limit and see if implementations use LRU or the like.
 	// If we do, we won't be able to assume any longer that the cache is dirty if, and only if, it has grown.
-	VkResult err = vkGetPipelineCacheData(vk_device, pipelines_cache.vk_cache, &pipelines_cache.current_size, nullptr);
+	VkResult err;
+	{
+		RWLockWrite write_lock(pipelines_cache_lock);
+		err = vkGetPipelineCacheData(vk_device, pipelines_cache.vk_cache, &pipelines_cache.current_size, nullptr);
+	}
 	ERR_FAIL_COND_V_MSG(err, 0, vformat("Couldn't get Vulkan pipeline cache data (VkResult error %d).", err));
 
 	return pipelines_cache.current_size;
@@ -5350,7 +5354,11 @@ Vector<uint8_t> RenderingDeviceDriverVulkan::pipeline_cache_serialize() {
 
 	pipelines_cache.buffer.resize(pipelines_cache.current_size + sizeof(PipelineCacheHeader));
 
-	VkResult err = vkGetPipelineCacheData(vk_device, pipelines_cache.vk_cache, &pipelines_cache.current_size, pipelines_cache.buffer.ptrw() + sizeof(PipelineCacheHeader));
+	VkResult err;
+	{
+		RWLockWrite write_lock(pipelines_cache_lock);
+		err = vkGetPipelineCacheData(vk_device, pipelines_cache.vk_cache, &pipelines_cache.current_size, pipelines_cache.buffer.ptrw() + sizeof(PipelineCacheHeader));
+	}
 	// Incomplete is OK because the cache may have grown since the size was queried (unless when exiting).
 	ERR_FAIL_COND_V_MSG(err != VK_SUCCESS && err != VK_INCOMPLETE, Vector<uint8_t>(), vformat("Couldn't get Vulkan pipeline cache data (VkResult error %d).", err));
 
@@ -6227,7 +6235,11 @@ RDD::PipelineID RenderingDeviceDriverVulkan::render_pipeline_create(
 #endif
 
 	VkPipeline vk_pipeline = VK_NULL_HANDLE;
-	VkResult err = vkCreateGraphicsPipelines(vk_device, pipelines_cache.vk_cache, 1, &pipeline_create_info, VKC::get_allocation_callbacks(VK_OBJECT_TYPE_PIPELINE), &vk_pipeline);
+	VkResult err;
+	{
+		RWLockRead read_lock(pipelines_cache_lock);
+		err = vkCreateGraphicsPipelines(vk_device, pipelines_cache.vk_cache, 1, &pipeline_create_info, VKC::get_allocation_callbacks(VK_OBJECT_TYPE_PIPELINE), &vk_pipeline);
+	}
 
 	// Don't print error for VK_ERROR_UNKNOWN on Adreno 660.
 	if (unlikely(err == VK_ERROR_UNKNOWN && driver_workarounds.dont_print_on_render_pipeline_creation_failure)) {
@@ -6619,7 +6631,11 @@ RDD::RaytracingPipelineID RenderingDeviceDriverVulkan::raytracing_pipeline_creat
 	pipeline_create_info.maxPipelineRayRecursionDepth = p_max_trace_recursion_depth;
 
 	VkPipeline vk_pipeline = VK_NULL_HANDLE;
-	VkResult err = device_functions.CreateRaytracingPipelinesKHR(vk_device, VK_NULL_HANDLE, pipelines_cache.vk_cache, 1, &pipeline_create_info, nullptr, &vk_pipeline);
+	VkResult err;
+	{
+		RWLockRead read_lock(pipelines_cache_lock);
+		err = device_functions.CreateRaytracingPipelinesKHR(vk_device, VK_NULL_HANDLE, pipelines_cache.vk_cache, 1, &pipeline_create_info, nullptr, &vk_pipeline);
+	}
 	ERR_FAIL_COND_V_MSG(err, RaytracingPipelineID(), vformat("Couldn't create Vulkan raytracing pipelines (VkResult error %d).", err));
 
 	return RaytracingPipelineID(vk_pipeline);
@@ -6738,7 +6754,11 @@ RDD::PipelineID RenderingDeviceDriverVulkan::compute_pipeline_create(ShaderID p_
 	}
 
 	VkPipeline vk_pipeline = VK_NULL_HANDLE;
-	VkResult err = vkCreateComputePipelines(vk_device, pipelines_cache.vk_cache, 1, &pipeline_create_info, VKC::get_allocation_callbacks(VK_OBJECT_TYPE_PIPELINE), &vk_pipeline);
+	VkResult err;
+	{
+		RWLockRead read_lock(pipelines_cache_lock);
+		err = vkCreateComputePipelines(vk_device, pipelines_cache.vk_cache, 1, &pipeline_create_info, VKC::get_allocation_callbacks(VK_OBJECT_TYPE_PIPELINE), &vk_pipeline);
+	}
 	ERR_FAIL_COND_V_MSG(err, PipelineID(), vformat("Couldn't create Vulkan compute pipelines (VkResult error %d).", err));
 
 	return PipelineID(vk_pipeline);

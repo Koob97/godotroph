@@ -1453,6 +1453,10 @@ private:
 			RID pipeline;
 			RID pipeline_shader;
 			RDD::ShaderID pipeline_shader_driver_id;
+			// Set when the last pipeline bind failed (e.g. pipeline creation failed on the
+			// GPU). Draws recorded in this state would encode against the previous
+			// pipeline's stale state and crash some drivers (Intel Mac). See draw_list_draw.
+			bool pipeline_bind_failed = false;
 			uint32_t pipeline_shader_layout_hash = 0;
 			uint32_t pipeline_push_constant_size = 0;
 			RID vertex_array;
@@ -1645,6 +1649,8 @@ private:
 			RID pipeline;
 			RID pipeline_shader;
 			RDD::ShaderID pipeline_shader_driver_id;
+			// Same as DrawList::State::pipeline_bind_failed, for compute dispatches.
+			bool pipeline_bind_failed = false;
 			uint32_t pipeline_shader_layout_hash = 0;
 			uint32_t local_group_size[3] = { 0, 0, 0 };
 			uint8_t push_constant_data[MAX_PUSH_CONSTANT_SIZE] = {};

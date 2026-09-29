@@ -30,6 +30,7 @@
 
 #pragma once
 
+#include "core/os/rw_lock.h"
 #include "core/templates/hash_map.h"
 #include "core/templates/paged_allocator.h"
 #include "core/templates/rb_map.h"
@@ -601,6 +602,10 @@ private:
 
 	static int caching_instance_count;
 	PipelineCache pipelines_cache;
+	// HAUNTED HEIST PATCH: pipeline creation (shared) vs. reading the cache data
+	// (exclusive). Some drivers (Intel Windows) crash in vkGetPipelineCacheData while
+	// another thread creates a pipeline through the same cache.
+	RWLock pipelines_cache_lock;
 	String pipeline_cache_id;
 	HashMap<uint64_t, bool> has_comp_alpha;
 
