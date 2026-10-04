@@ -128,6 +128,39 @@ Note that it is okay to have many `.pdb` files uploaded to Sentry at once, since
 
 Contains all changes made to the engine, from most recent to oldest.
 
+## 10.4.26 WASAPI: silence the click when the audio device turns on
+
+Custom patch (no upstream PR) to `drivers/wasapi/audio_driver_wasapi.cpp`
+(`AudioDriverWASAPI::start()` and `input_start()`). Marked `HAUNTED HEIST PATCH`.
+
+Why: launching the game made a short click as Windows opened the playback
+device. `IAudioClient::Start()` plays whatever is already in the endpoint
+buffer, and that buffer is uninitialized until something is written, so the
+first period is a pop. A second click followed once the microphone opened:
+`audio/driver/enable_input` is on for voice chat, and script called
+`AudioServer.set_input_device_active(true)` after the render stream was
+already running. Starting capture against a live render stream glitches a lot
+of devices. A physical relay tick inside some interfaces (the DAC powering on)
+is separate and this patch does not remove it.
+
+The patch, in `start()`:
+
+1. If input is enabled and capture is not already running, call `input_start()`
+   before the render stream starts, so the microphone wakes while nothing is
+   playing.
+2. Release the whole render buffer with `AUDCLNT_BUFFERFLAGS_SILENT` before
+   `IAudioClient::Start()`, so the device cannot play uninitialized samples.
+   `start()` takes the driver mutex around this. The mutex is recursive, so the
+   audio thread's device-reinit path (which already holds it) can still call
+   `start()`.
+3. `input_start()` returns `OK` when capture is already active. The game still
+   calls `set_input_device_active(true)` once voice chat is ready; a second
+   `Start()` would re-open the microphone and click again.
+
+Needs `core/config/project_settings.h` for `GLOBAL_GET("audio/driver/enable_input")`.
+Windows only. Shipped in `bin/2026-10-04` (editor and release template). Players
+on an older editor or template still hear the click.
+
 ## 10.3.26 IK: fix out-of-bounds crash in deterministic IterateIK3D with an extended end bone
 
 Custom patch (no upstream PR) to `scene/3d/iterate_ik_3d.h`

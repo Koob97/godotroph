@@ -33,6 +33,7 @@
 #include "audio_driver_wasapi.h"
 
 #include "core/config/engine.h"
+#include "core/config/project_settings.h"
 #include "core/os/os.h"
 
 #include <functiondiscoverykeys.h>
@@ -987,14 +988,48 @@ void AudioDriverWASAPI::thread_func(void *p_udata) {
 }
 
 void AudioDriverWASAPI::start() {
-	if (audio_output.audio_client) {
-		HRESULT hr = audio_output.audio_client->Start();
-		if (hr != S_OK) {
-			ERR_PRINT("WASAPI: Start failed");
-		} else {
-			audio_output.active.set();
+	if (!audio_output.audio_client || !audio_output.render_client) {
+		return;
+	}
+
+	// HAUNTED HEIST PATCH: the startup click is the playback device waking up.
+	// Two things cause it. Start() plays whatever is already in the endpoint
+	// buffer, which is uninitialized unless we prime it, and opening the
+	// microphone against an already-running render stream clicks again (voice
+	// capture used to start later, from script, once the menu was up).
+	// Capture is opened first, while nothing is playing, then the whole render
+	// buffer is released as silence before Start().
+	lock();
+
+	if (!audio_input.active.is_set() && GLOBAL_GET("audio/driver/enable_input")) {
+		input_start();
+	}
+
+	if (!audio_output.active.is_set()) {
+		UINT32 buffer_size = 0;
+		UINT32 padding = 0;
+		HRESULT hr = audio_output.audio_client->GetBufferSize(&buffer_size);
+		if (hr == S_OK) {
+			hr = audio_output.audio_client->GetCurrentPadding(&padding);
+		}
+		if (hr == S_OK && buffer_size > padding) {
+			UINT32 silent_frames = buffer_size - padding;
+			BYTE *silent_buffer = nullptr;
+			hr = audio_output.render_client->GetBuffer(silent_frames, &silent_buffer);
+			if (hr == S_OK) {
+				audio_output.render_client->ReleaseBuffer(silent_frames, AUDCLNT_BUFFERFLAGS_SILENT);
+			}
 		}
 	}
+
+	HRESULT hr = audio_output.audio_client->Start();
+	if (hr != S_OK) {
+		ERR_PRINT("WASAPI: Start failed with error 0x" + String::num_uint64(hr, 16) + ".");
+	} else {
+		audio_output.active.set();
+	}
+
+	unlock();
 }
 
 void AudioDriverWASAPI::lock() {
@@ -1016,6 +1051,13 @@ void AudioDriverWASAPI::finish() {
 }
 
 Error AudioDriverWASAPI::input_start() {
+	// HAUNTED HEIST PATCH: capture is started with the render stream (see start()).
+	// Script calls this again once voice chat is ready; a second Start() would
+	// re-open the microphone and click.
+	if (audio_input.active.is_set()) {
+		return OK;
+	}
+
 	Error err = init_input_device();
 	if (err != OK) {
 		ERR_PRINT("WASAPI: init_input_device error");
