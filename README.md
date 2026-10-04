@@ -128,6 +128,86 @@ Note that it is okay to have many `.pdb` files uploaded to Sentry at once, since
 
 Contains all changes made to the engine, from most recent to oldest.
 
+## 10.3.26 IK: fix out-of-bounds crash in deterministic IterateIK3D with an extended end bone
+
+Custom patch (no upstream PR) to `scene/3d/iterate_ik_3d.h`
+(`IterateIK3DSetting::init_joints`) and `scene/3d/chain_ik_3d.h`
+(`ChainIK3DSetting::cache_current_vectors`). Marked `HAUNTED HEIST PATCH`.
+Game-side note in `Haunted-Heist/Docs/Crashes.md`.
+
+Why: a player crashed mid-game with `EXCEPTION_BREAKPOINT` (a `LocalVector`
+bounds check, `local_vector.h:206`) in
+`ChainIK3D::ChainIK3DSetting::cache_current_vectors` (`chain_ik_3d.h:156`),
+reached from `IterateIK3DSetting::init_joints` during
+`Skeleton3D::_process_modifiers`. The game's spine IK (`upper_body_IK`, a
+`CCDIK3D`) uses `extend_end_bone = true` with the end-bone direction
+`FROM_PARENT`, and `PlayerAnimStateMachine` sets `deterministic = true` on it.
+In deterministic mode `_init_joints` re-runs `init_joints()` every frame
+**without** `_clear_joints()`, so `solver_info_list` keeps last frame's
+entries. `init_joints` rebuilds `chain` from scratch: one point per joint plus
+one extra point for the end extension — but that extra push is skipped
+(`continue`) when `get_bone_axis()` returns a zero axis. With
+`mutable_bone_axes` (default on), `FROM_PARENT` derives the axis from the end
+bone's *current animated local translation*, so any frame where an animation
+or blend zeroes that translation (here: `DEF_head`) skips the extension while
+the last joint's solver info is still non-null from earlier frames.
+`cache_current_vectors` then reads `chain[joints.size()]` on a chain of only
+`joints.size()` points — out of bounds, `CRASH_BAD_INDEX`, game dead.
+The dirty (non-deterministic) init path is immune because `_clear_joints()`
+nulls the solver list first, which is why only the spine IK crashed.
+
+The patch, two independent halves:
+
+1. `init_joints`: when the end-bone axis is zero, `memdelete` and null the
+   last joint's stale solver info before `continue`, so a solver entry can
+   never outlive its chain point. It is recreated the next frame the axis is
+   valid (fine in deterministic mode, which rebuilds rotations every init).
+2. `cache_current_vectors`: break out of the loop when `TAIL` would exceed
+   `chain` (or `HEAD` the solver list) instead of trusting `joints.size()`,
+   as a defensive guard for any other path that leaves the chain short.
+
+These IK classes come from the upstream Godot 4.6 IK rework
+(`IterateIK3D`/`CCDIK3D`/`ChainIK3D`), so the bug very likely exists upstream;
+worth checking master and reporting if still present. Rebuild editor + release
+template (and the Mac export template, built separately) before this helps
+players.
+
+## 10.3.26 Windows: permanently prefer Vulkan after a Direct3D 12 startup crash
+
+Custom patch (no upstream PR) to `platform/windows/display_server_windows.cpp` /
+`.h` (constructor, right after the 9.29.26 Wine patch, plus `process_events()`).
+Marked `HAUNTED HEIST PATCH`. Game-side note in `Haunted-Heist/Docs/Crashes.md`.
+
+Why: a Windows player crashed on every launch with
+`EXCEPTION_ACCESS_VIOLATION_WRITE / 0x90` in
+`TextureStorage::_update_render_target` (`texture_storage.cpp:4274`) while the
+main scene instantiated its first `PopupMenu`. The real failure is earlier: the
+D3D12 driver started refusing `texture_create` mid-load (device removed or
+similar), so the render target's placeholder texture RID was never initialized
+and the engine wrote through a null `Texture *`. Launching with
+`--rendering-driver vulkan` fixed that machine. Since 9.29.26 ships D3D12 as
+the Windows default, affected players crash on every default launch with no
+way out besides finding the launch option.
+
+The patch: when the driver resolves to `d3d12` and did **not** come from
+`--rendering-driver`, write a `user://d3d12_boot_pending` sentinel before the
+first D3D12 boot attempt (before device init, which can itself crash broken
+drivers). `process_events()` deletes it once 60 frames have been drawn. If the
+sentinel is still present at the next launch, the previous D3D12 startup
+crashed: a permanent `user://prefer_vulkan` marker is written and the game
+prefers Vulkan from then on, keeping D3D12 as a last-resort fallback if Vulkan
+fails to initialize. The driver source is reported as
+`RENDERING_SOURCE_FALLBACK`. An explicit `--rendering-driver` always wins and
+never writes or reads the markers.
+
+The switch is permanent by design: one startup crash flips the machine to
+Vulkan forever (no retry per build, no second-strike requirement). Players (or
+support) reset it by deleting `user://prefer_vulkan` from the project's user
+data folder or launching once with `--rendering-driver d3d12`. Both marker
+files are plain text and readable from GDScript, so the game can surface or
+report the switch. Known tradeoff: any crash during the first ~60 frames, even
+one unrelated to rendering, also flips the machine to Vulkan.
+
 ## 9.29.26 Windows: prefer Vulkan over Direct3D 12 under Wine/Proton
 
 Custom patch (no upstream PR) to `platform/windows/display_server_windows.cpp`

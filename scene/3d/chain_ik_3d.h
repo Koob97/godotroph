@@ -149,6 +149,12 @@ public:
 			for (uint32_t i = 0; i < joints.size(); i++) {
 				int HEAD = i;
 				int TAIL = i + 1;
+				if (TAIL >= (int)chain.size() || HEAD >= (int)solver_info_list.size()) {
+					// HAUNTED HEIST PATCH: the chain may lack the end extension point
+					// (e.g. zero end bone axis in IterateIK3D::init_joints), so never
+					// trust joints.size() to bound chain/solver_info_list.
+					break;
+				}
 				IKModifier3DSolverInfo *solver_info = solver_info_list[HEAD];
 				if (!solver_info) {
 					continue;

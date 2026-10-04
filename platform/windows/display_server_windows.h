@@ -491,6 +491,10 @@ class DisplayServerWindows : public DisplayServer {
 	bool drop_events = false;
 	bool in_dispatch_input_event = false;
 
+	// HAUNTED HEIST PATCH: true while this session's D3D12 startup-crash sentinel file
+	// exists; cleared in process_events() once the first frames have rendered.
+	bool d3d12_boot_sentinel_armed = false;
+
 	WNDCLASSEXW wc;
 	HBRUSH window_bkg_brush = nullptr;
 	uint32_t window_bkg_brush_color = 0;

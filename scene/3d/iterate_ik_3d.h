@@ -211,6 +211,14 @@ public:
 				if (last && extends_end) {
 					Vector3 axis = IKModifier3D::get_bone_axis(p_skeleton, end_bone.bone, end_bone_direction, p_mutable_bone_axes);
 					if (axis.is_zero_approx()) {
+						// HAUNTED HEIST PATCH: no end extension this frame, so drop any
+						// stale solver info (left by a previous deterministic-mode init)
+						// so it cannot pair with the missing chain point in
+						// cache_current_vectors (out-of-bounds chain[TAIL] crash).
+						if (solver_info_list[i]) {
+							memdelete(solver_info_list[i]);
+							solver_info_list[i] = nullptr;
+						}
 						continue;
 					}
 					if (!solver_info_list[i]) {

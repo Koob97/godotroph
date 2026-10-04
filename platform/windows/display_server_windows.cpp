@@ -104,6 +104,16 @@
 
 #define WM_INDICATOR_CALLBACK_MESSAGE (WM_USER + 1)
 
+// HAUNTED HEIST PATCH: crash-once-on-D3D12 -> permanently prefer Vulkan.
+// The sentinel is written right before the first D3D12 boot attempt (see the
+// constructor) and removed in process_events() once the session has rendered its
+// first frames. If it is still present at the next launch, the previous D3D12
+// startup crashed; the permanent marker is then written and the game prefers Vulkan
+// from that point on. Players can reset this by deleting the marker file or passing
+// --rendering-driver d3d12.
+static const char *D3D12_BOOT_SENTINEL_PATH = "user://d3d12_boot_pending";
+static const char *PREFER_VULKAN_MARKER_PATH = "user://prefer_vulkan";
+
 static String format_error_message(DWORD id) {
 	LPWSTR messageBuffer = nullptr;
 	size_t size = FormatMessageW(FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
@@ -4224,6 +4234,13 @@ String DisplayServerWindows::keyboard_get_layout_name(int p_index) const {
 void DisplayServerWindows::process_events() {
 	ERR_FAIL_COND(!Thread::is_main_thread());
 
+	// HAUNTED HEIST PATCH: the D3D12 startup-crash sentinel is cleared once the session
+	// has survived rendering its first frames (see D3D12_BOOT_SENTINEL_PATH).
+	if (unlikely(d3d12_boot_sentinel_armed) && Engine::get_singleton()->get_frames_drawn() >= 60) {
+		DirAccess::remove_absolute(D3D12_BOOT_SENTINEL_PATH);
+		d3d12_boot_sentinel_armed = false;
+	}
+
 	if (!drop_events) {
 #ifdef SDL_ENABLED
 		if (joypad_sdl) {
@@ -7895,6 +7912,38 @@ DisplayServerWindows::DisplayServerWindows(const String &p_rendering_driver, Dis
 		OS::get_singleton()->set_current_rendering_driver_name(rendering_driver, OS::RENDERING_SOURCE_FALLBACK);
 		// Keep D3D12 as a last resort even if fallback_to_d3d12 is off.
 		fallback_to_d3d12 = true;
+	}
+
+	// HAUNTED HEIST PATCH: if a previous D3D12 launch crashed before rendering its first
+	// frames, prefer Vulkan permanently (see D3D12_BOOT_SENTINEL_PATH above). Skipped when
+	// the player explicitly chose a driver with --rendering-driver.
+	if (rendering_driver == "d3d12" && OS::get_singleton()->get_current_rendering_driver_name_source() != OS::RENDERING_SOURCE_COMMANDLINE) {
+		if (FileAccess::exists(D3D12_BOOT_SENTINEL_PATH)) {
+			// The sentinel was never cleared: the last D3D12 startup crashed.
+			DirAccess::remove_absolute(D3D12_BOOT_SENTINEL_PATH);
+			if (!FileAccess::exists(PREFER_VULKAN_MARKER_PATH)) {
+				Ref<FileAccess> marker = FileAccess::open(PREFER_VULKAN_MARKER_PATH, FileAccess::WRITE);
+				if (marker.is_valid()) {
+					marker->store_line("A Direct3D 12 startup crashed on this machine; the game now prefers Vulkan.");
+					marker->store_line("Delete this file (or launch with --rendering-driver d3d12) to try Direct3D 12 again.");
+				}
+			}
+		}
+		if (FileAccess::exists(PREFER_VULKAN_MARKER_PATH)) {
+			print_verbose("A previous Direct3D 12 startup crashed, preferring Vulkan.");
+			rendering_driver = "vulkan";
+			OS::get_singleton()->set_current_rendering_driver_name(rendering_driver, OS::RENDERING_SOURCE_FALLBACK);
+			// Keep D3D12 as a last resort if Vulkan fails to initialize.
+			fallback_to_d3d12 = true;
+		} else {
+			// Arm the sentinel before touching D3D12 at all; device init itself can crash
+			// on broken drivers.
+			Ref<FileAccess> sentinel = FileAccess::open(D3D12_BOOT_SENTINEL_PATH, FileAccess::WRITE);
+			if (sentinel.is_valid()) {
+				sentinel->store_line("A Direct3D 12 boot attempt is in progress. This file is removed once the game renders its first frames.");
+				d3d12_boot_sentinel_armed = true;
+			}
+		}
 	}
 #endif
 
