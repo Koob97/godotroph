@@ -35,6 +35,7 @@
 #include "core/config/engine.h"
 #include "core/config/project_settings.h"
 #include "core/os/os.h"
+#include "core/templates/local_vector.h"
 
 #include <functiondiscoverykeys.h>
 #include <wrl/client.h>
@@ -522,8 +523,12 @@ Error AudioDriverWASAPI::init_output_device(bool p_reinit) {
 	// Sample rate is independent of channels (ref: https://stackoverflow.com/questions/11048825/audio-sample-frequency-rely-on-channels)
 	samples_in.resize(buffer_frames * channels);
 
+	// HAUNTED HEIST PATCH (Sonar lag): device reopen no longer runs under `mutex`,
+	// but the input ring cursors are read by other threads under it.
+	lock();
 	input_position = 0;
 	input_size = 0;
+	unlock();
 
 	print_verbose("WASAPI: detected " + itos(audio_output.channels) + " channels");
 	print_verbose("WASAPI: audio buffer frames: " + itos(buffer_frames) + " calculated latency: " + itos(buffer_frames * 1000 / mix_rate) + "ms");
@@ -551,7 +556,12 @@ Error AudioDriverWASAPI::init_input_device(bool p_reinit) {
 	HRESULT hr = audio_input.audio_client->GetBufferSize(&max_frames);
 	ERR_FAIL_COND_V(hr != S_OK, ERR_CANT_OPEN);
 
+	// HAUNTED HEIST PATCH (Sonar lag): the input ring is resized here but read by
+	// other threads under `mutex` (AudioServer::get_input_frames); device reopen
+	// no longer holds that mutex, so take it for the resize.
+	lock();
 	input_buffer_init(max_frames);
+	unlock();
 
 	return OK;
 }
@@ -663,6 +673,9 @@ void AudioDriverWASAPI::set_output_device(const String &p_name) {
 	lock();
 	audio_output.new_device = p_name;
 	unlock();
+	// HAUNTED HEIST PATCH (Sonar lag): tell the audio thread a name swap is
+	// pending so it only takes `mutex` for the compare when needed.
+	output_device_change_pending.set();
 }
 
 int32_t AudioDriverWASAPI::read_sample(WORD format_tag, int bits_per_sample, BYTE *buffer, int i) {
@@ -732,6 +745,10 @@ void AudioDriverWASAPI::thread_func(void *p_udata) {
 	AudioDriverWASAPI *ad = static_cast<AudioDriverWASAPI *>(p_udata);
 	uint32_t avail_frames = 0;
 	uint32_t write_ofs = 0;
+	// HAUNTED HEIST PATCH (Sonar lag): capture samples are staged here while the
+	// WASAPI COM calls run outside `mutex`, then flushed to the shared input ring
+	// under `mutex` in one short hold. Grows to one driver period and stays.
+	LocalVector<int32_t> capture_scratch;
 
 	while (!ad->exit_thread.is_set()) {
 		uint32_t read_frames = 0;
@@ -756,7 +773,17 @@ void AudioDriverWASAPI::thread_func(void *p_udata) {
 			ad->unlock();
 		}
 
-		ad->lock();
+		// HAUNTED HEIST PATCH (Sonar lag): everything below talks to the WASAPI
+		// endpoint (COM calls that cross into audiodg / virtual-device processes
+		// such as SteelSeries Sonar) or opens/closes devices, which can take
+		// hundreds of milliseconds on a flapping virtual endpoint. It used to run
+		// under `mutex` (the AudioServer lock), stalling the game thread on every
+		// sound start / bus change / mic read whenever the endpoint was slow.
+		// It now runs under device_mutex, contended only by start() /
+		// input_start() / input_stop(). `mutex` is taken only for the brief
+		// shared-state touches (device-name swap, input-ring writes).
+		// Lock order: device_mutex first, then mutex. Never the reverse.
+		ad->device_mutex.lock();
 		ad->start_counting_ticks();
 
 		if (avail_frames > 0 && ad->audio_output.audio_client) {
@@ -856,8 +883,21 @@ void AudioDriverWASAPI::thread_func(void *p_udata) {
 		}
 
 		// User selected a new output device, finish the current one so we'll init the new output device
-		if (ad->audio_output.device_name != ad->audio_output.new_device) {
-			ad->audio_output.device_name = ad->audio_output.new_device;
+		// HAUNTED HEIST PATCH (Sonar lag): new_device is written by other threads
+		// under `mutex` (set_output_device), so compare/swap the names under it;
+		// the pending flag keeps this off the mutex on every ordinary pass. The
+		// device close itself stays on device_mutex only.
+		bool output_device_changed = false;
+		if (ad->output_device_change_pending.is_set()) {
+			ad->lock();
+			if (ad->audio_output.device_name != ad->audio_output.new_device) {
+				ad->audio_output.device_name = ad->audio_output.new_device;
+				output_device_changed = true;
+			}
+			ad->output_device_change_pending.clear();
+			ad->unlock();
+		}
+		if (output_device_changed) {
 			Error err = ad->finish_output_device();
 			if (err != OK) {
 				ERR_PRINT("WASAPI: finish_output_device error");
@@ -885,6 +925,8 @@ void AudioDriverWASAPI::thread_func(void *p_udata) {
 			BYTE *data;
 			UINT32 num_frames_available;
 			DWORD flags;
+
+			capture_scratch.clear();
 
 			HRESULT hr = ad->audio_input.capture_client->GetNextPacketSize(&packet_length);
 			if (hr == S_OK) {
@@ -929,8 +971,10 @@ void AudioDriverWASAPI::thread_func(void *p_udata) {
 							}
 						}
 
-						ad->input_buffer_write(l);
-						ad->input_buffer_write(r);
+						// HAUNTED HEIST PATCH (Sonar lag): staged, flushed to the
+						// ring under `mutex` after the COM calls are done.
+						capture_scratch.push_back(l);
+						capture_scratch.push_back(r);
 					}
 
 					read_frames += num_frames_available;
@@ -941,6 +985,17 @@ void AudioDriverWASAPI::thread_func(void *p_udata) {
 					hr = ad->audio_input.capture_client->GetNextPacketSize(&packet_length);
 					ERR_BREAK(hr != S_OK);
 				}
+			}
+
+			// HAUNTED HEIST PATCH (Sonar lag): flush the staged capture samples to
+			// the shared input ring in one short `mutex` hold. Readers
+			// (AudioServer::get_input_frames) take the same mutex.
+			if (capture_scratch.size() > 0) {
+				ad->lock();
+				for (uint32_t i = 0; i < capture_scratch.size(); i++) {
+					ad->input_buffer_write(capture_scratch[i]);
+				}
+				ad->unlock();
 			}
 
 			// If we're using the Default output device and it changed finish it so we'll re-init the output device
@@ -954,8 +1009,19 @@ void AudioDriverWASAPI::thread_func(void *p_udata) {
 			}
 
 			// User selected a new input device, finish the current one so we'll init the new input device
-			if (ad->audio_input.device_name != ad->audio_input.new_device) {
-				ad->audio_input.device_name = ad->audio_input.new_device;
+			// HAUNTED HEIST PATCH (Sonar lag): same pending-flag pattern as the
+			// output device above.
+			bool input_device_changed = false;
+			if (ad->input_device_change_pending.is_set()) {
+				ad->lock();
+				if (ad->audio_input.device_name != ad->audio_input.new_device) {
+					ad->audio_input.device_name = ad->audio_input.new_device;
+					input_device_changed = true;
+				}
+				ad->input_device_change_pending.clear();
+				ad->unlock();
+			}
+			if (input_device_changed) {
 				Error err = ad->finish_input_device();
 				if (err != OK) {
 					ERR_PRINT("WASAPI: finish_input_device error");
@@ -977,7 +1043,7 @@ void AudioDriverWASAPI::thread_func(void *p_udata) {
 		}
 
 		ad->stop_counting_ticks();
-		ad->unlock();
+		ad->device_mutex.unlock();
 
 		// Let the thread rest a while if we haven't read or write anything
 		if (written_frames == 0 && read_frames == 0) {
@@ -999,7 +1065,11 @@ void AudioDriverWASAPI::start() {
 	// capture used to start later, from script, once the menu was up).
 	// Capture is opened first, while nothing is playing, then the whole render
 	// buffer is released as silence before Start().
-	lock();
+	// HAUNTED HEIST PATCH (Sonar lag): device lifecycle and endpoint COM moved
+	// from `mutex` to device_mutex so they cannot stall the game thread's
+	// AudioServer::lock(). device_mutex is recursive; thread_func re-enters it
+	// when it calls start() after an output reinit.
+	device_mutex.lock();
 
 	if (!audio_input.active.is_set() && GLOBAL_GET("audio/driver/enable_input")) {
 		input_start();
@@ -1029,7 +1099,7 @@ void AudioDriverWASAPI::start() {
 		audio_output.active.set();
 	}
 
-	unlock();
+	device_mutex.unlock();
 }
 
 void AudioDriverWASAPI::lock() {
@@ -1051,6 +1121,14 @@ void AudioDriverWASAPI::finish() {
 }
 
 Error AudioDriverWASAPI::input_start() {
+	// HAUNTED HEIST PATCH (Sonar lag): deliberately NOT serialized on
+	// device_mutex. Capture lifecycle synchronizes with thread_func through the
+	// audio_input.active flag, exactly like the shipped builds: the thread only
+	// touches the capture client while active is set, and this function only
+	// (re)initializes it while active is clear. Taking device_mutex here starved
+	// the render loop for the whole capture-device init (tens to hundreds of ms
+	// against a ~10 ms WASAPI buffer) on every mic restart — audible crackle.
+
 	// HAUNTED HEIST PATCH: capture is started with the render stream (see start()).
 	// Script calls this again once voice chat is ready; a second Start() would
 	// re-open the microphone and click.
@@ -1074,6 +1152,9 @@ Error AudioDriverWASAPI::input_start() {
 }
 
 Error AudioDriverWASAPI::input_stop() {
+	// HAUNTED HEIST PATCH (Sonar lag): not serialized on device_mutex, same
+	// reasoning as input_start() — the active flag is the synchronization,
+	// matching shipped behavior.
 	if (audio_input.active.is_set()) {
 		audio_input.audio_client->Stop();
 		audio_input.active.clear();
@@ -1098,6 +1179,8 @@ void AudioDriverWASAPI::set_input_device(const String &p_name) {
 	lock();
 	audio_input.new_device = p_name;
 	unlock();
+	// HAUNTED HEIST PATCH (Sonar lag): see set_output_device.
+	input_device_change_pending.set();
 }
 
 AudioDriverWASAPI::AudioDriverWASAPI() {
