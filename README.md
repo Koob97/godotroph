@@ -128,6 +128,53 @@ Note that it is okay to have many `.pdb` files uploaded to Sentry at once, since
 
 Contains all changes made to the engine, from most recent to oldest.
 
+## 10.7.26 WASAPI: keep endpoint COM and device reopens off the AudioServer mutex
+
+Custom patch (no upstream PR) to `drivers/wasapi/audio_driver_wasapi.cpp` and
+`audio_driver_wasapi.h` (`AudioDriverWASAPI::thread_func`, `start()`,
+`set_output_device` / `set_input_device`, `init_output_device` /
+`init_input_device`). Marked `HAUNTED HEIST PATCH (Sonar lag)`.
+
+Why: SteelSeries Sonar's virtual endpoints make WASAPI calls slow and
+invalidate the default device constantly. The audio thread held the
+AudioServer mutex (`AudioDriverWASAPI::mutex`, the same lock
+`AudioServer.lock()` takes) across every `GetCurrentPadding` / `GetBuffer` /
+`ReleaseBuffer`, the microphone packet loop, and full device reopens. The game
+thread then stalled on every sound start, bus change, and mic read, which
+showed up as a sustained FPS collapse while Sonar was running.
+
+The patch:
+
+1. `thread_func` holds a dedicated recursive `device_mutex`, shared only with
+   `start()`, across endpoint COM and device open/close. Lock order is
+   `device_mutex` first, then `mutex`. Never the reverse.
+2. The AudioServer mutex is taken only for the mix, a pending device-name
+   swap, and input-ring writes. `set_output_device` / `set_input_device` set
+   `output_device_change_pending` / `input_device_change_pending` so an
+   ordinary pass does not lock just to compare names. Steady-state
+   acquisitions of `mutex` match the builds before this patch.
+3. Capture samples are staged in `capture_scratch` while the COM calls run,
+   then flushed to the shared input ring in one short `mutex` hold. Readers
+   (`AudioServer::get_input_frames`) take that same mutex.
+   `init_output_device` / `init_input_device` take `mutex` only to reset the
+   input-ring cursors and resize the ring, because a device reopen no longer
+   holds it for the whole init.
+4. `input_start()` and `input_stop()` stay off `device_mutex` on purpose. They
+   still synchronize with the audio thread through `audio_input.active`, the
+   same as before. Putting capture init on `device_mutex` starved the render
+   loop for the whole microphone open (mic restarts, push-to-talk) and caused
+   audible crackle.
+5. The 10.4.26 startup-click path is unchanged in what it does. `start()`
+   still opens capture before the render stream and still primes the render
+   buffer with `AUDCLNT_BUFFERFLAGS_SILENT`. That section now takes
+   `device_mutex` instead of the AudioServer mutex. The mutex is still
+   recursive, so the audio thread can call `start()` after an output reinit.
+
+Windows only. Shipped in `bin/2026-10-07` (editor and release template) and
+`bin/2026-10-07-TRACY`. `bin/2026-10-04` has the click fix and still holds the
+AudioServer mutex across the WASAPI calls, so Sonar still tanks the frame
+rate on that build.
+
 ## 10.4.26 WASAPI: silence the click when the audio device turns on
 
 Custom patch (no upstream PR) to `drivers/wasapi/audio_driver_wasapi.cpp`
@@ -150,7 +197,8 @@ The patch, in `start()`:
    playing.
 2. Release the whole render buffer with `AUDCLNT_BUFFERFLAGS_SILENT` before
    `IAudioClient::Start()`, so the device cannot play uninitialized samples.
-   `start()` takes the driver mutex around this. The mutex is recursive, so the
+   `start()` takes a recursive mutex around this (`device_mutex` after the
+   10.7.26 Sonar patch; the AudioServer mutex on the 10.4.26 build), so the
    audio thread's device-reinit path (which already holds it) can still call
    `start()`.
 3. `input_start()` returns `OK` when capture is already active. The game still

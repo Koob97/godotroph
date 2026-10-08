@@ -779,8 +779,9 @@ void AudioDriverWASAPI::thread_func(void *p_udata) {
 		// hundreds of milliseconds on a flapping virtual endpoint. It used to run
 		// under `mutex` (the AudioServer lock), stalling the game thread on every
 		// sound start / bus change / mic read whenever the endpoint was slow.
-		// It now runs under device_mutex, contended only by start() /
-		// input_start() / input_stop(). `mutex` is taken only for the brief
+		// It now runs under device_mutex, contended only by start().
+		// input_start() / input_stop() stay off this mutex (see those functions).
+		// `mutex` is taken only for the brief
 		// shared-state touches (device-name swap, input-ring writes).
 		// Lock order: device_mutex first, then mutex. Never the reverse.
 		ad->device_mutex.lock();

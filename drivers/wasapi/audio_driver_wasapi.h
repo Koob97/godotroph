@@ -66,12 +66,13 @@ class AudioDriverWASAPI : public AudioDriver {
 
 	Mutex mutex;
 	// HAUNTED HEIST PATCH (Sonar lag): serializes WASAPI endpoint COM calls and
-	// device open/close (thread_func's post-mix section, start(), input_start(),
-	// input_stop()) WITHOUT blocking `mutex`, which is AudioServer's lock. A slow
-	// or flapping endpoint (SteelSeries Sonar's virtual devices) used to hold
-	// `mutex` through every COM call and multi-hundred-ms device reopen, stalling
-	// the game thread on every sound start / bus change / mic read.
-	// Lock order: device_mutex first, then mutex. Never the reverse.
+	// device open/close (thread_func's post-mix section and start()) WITHOUT
+	// blocking `mutex`, which is AudioServer's lock. A slow or flapping endpoint
+	// (SteelSeries Sonar's virtual devices) used to hold `mutex` through every
+	// COM call and multi-hundred-ms device reopen, stalling the game thread on
+	// every sound start / bus change / mic read.
+	// input_start() / input_stop() stay off this mutex on purpose; see those
+	// functions. Lock order: device_mutex first, then mutex. Never the reverse.
 	Mutex device_mutex;
 	Thread thread;
 
